@@ -5,7 +5,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { CATEGORIES, VIDEOS, PROCESSING, sevLabel } from "./data.js";
 import { useReveal, PageHead, SevTag } from "./shell.jsx";
-import { listVideos, uploadVideo, getProgress } from "./api.js";
+import { listVideos, uploadVideo, getProgress, getModels, getEstimate, readDuration } from "./api.js";
 
 export function Marquee() {
   const words = CATEGORIES.map(c => c.id);
@@ -109,6 +109,8 @@ function VideoRow({ v, num, go }) {
 }
 
 /* ---------- Upload ---------- */
+const INTERVALS = [1, 2, 3, 5, 10];
+
 export function Upload({ go, route }) {
   useReveal();
   const fileRef = useRef(null);
@@ -117,6 +119,26 @@ export function Upload({ go, route }) {
   const [prog, setProg] = useState(null);             // 파이프라인 진행
   const [error, setError] = useState("");
   const [demo, setDemo] = useState(false);
+
+  // 모델 · 샘플링 주기 · 비용 추정
+  const [models, setModels] = useState([]);
+  const [model, setModel] = useState("");
+  const [interval_, setInterval_] = useState(1);
+  const [pending, setPending] = useState(null);       // { file, duration }
+  const [est, setEst] = useState(null);
+
+  useEffect(() => {
+    getModels()
+      .then(d => { setModels(d.models); setModel(d.default || d.models[0].id); setInterval_(d.defaultInterval || 1); })
+      .catch(() => {});
+  }, []);
+
+  // 모델/주기/파일이 바뀔 때마다 예상 비용 갱신 (파일 없으면 10분 기준)
+  useEffect(() => {
+    if (!model) return;
+    const dur = pending && pending.duration ? pending.duration : 600;
+    getEstimate(dur, interval_, model).then(setEst).catch(() => setEst(null));
+  }, [model, interval_, pending]);
 
   // 진행 중 영상 폴링
   useEffect(() => {
@@ -138,13 +160,22 @@ export function Upload({ go, route }) {
 
   const pick = () => fileRef.current && fileRef.current.click();
 
+  // 파일 선택 → 바로 올리지 않고 길이를 읽어 예상 비용을 먼저 보여준다
   const onFile = async (file) => {
     if (!file) return;
     setError("");
+    const duration = await readDuration(file);
+    setPending({ file, duration });
+  };
+
+  const startUpload = async () => {
+    if (!pending) return;
+    setError("");
     setUploadPct(0);
     try {
-      const { id } = await uploadVideo(file, setUploadPct);
+      const { id } = await uploadVideo(pending.file, setUploadPct, { model, interval: interval_ });
       setUploadPct(null);
+      setPending(null);
       setProg(null);
       setActiveId(id);
     } catch (e) {
@@ -157,6 +188,8 @@ export function Upload({ go, route }) {
     e.preventDefault();
     onFile(e.dataTransfer.files && e.dataTransfer.files[0]);
   };
+
+  const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "K" : String(n);
 
   const stages = prog ? prog.stages : (demo ? PROCESSING.stages.map(s => ({ ...s, error: "" })) : null);
   const overall = prog ? prog.overall
@@ -177,11 +210,53 @@ export function Upload({ go, route }) {
       <div className="dropzone reveal" style={{ marginTop: 48 }} onClick={pick}
         onDragOver={e => e.preventDefault()} onDrop={onDrop}>
         <div className="mono" style={{ marginBottom: 18 }}>DROP / SELECT — .MP4 .MOV .MKV</div>
-        <div className="big">{uploadPct !== null ? `전송 중 ${uploadPct}%` : "영상을 여기에 끌어다 놓기"}</div>
-        <div className="dim" style={{ marginTop: 16, fontSize: 14 }}>업로드 즉시 아카이브 + 검수가 동시에 시작됩니다</div>
-        <button className="btn primary" style={{ marginTop: 28 }} onClick={(e) => { e.stopPropagation(); pick(); }}>파일 선택 →</button>
+        <div className="big">
+          {uploadPct !== null ? `전송 중 ${uploadPct}%`
+            : pending ? pending.file.name
+            : "영상을 여기에 끌어다 놓기"}
+        </div>
+        <div className="dim" style={{ marginTop: 16, fontSize: 14 }}>
+          {pending
+            ? `길이 ${Math.round(pending.duration / 60)}분 ${Math.round(pending.duration % 60)}초 — 아래에서 모델·주기 확인 후 업로드`
+            : "업로드 즉시 아카이브 + 검수가 동시에 시작됩니다"}
+        </div>
+        <button className="btn primary" style={{ marginTop: 28 }}
+          onClick={(e) => { e.stopPropagation(); pending ? startUpload() : pick(); }}>
+          {pending ? "업로드 시작 →" : "파일 선택 →"}
+        </button>
         {error && <div className="mono cit" style={{ marginTop: 18 }}>{error}</div>}
       </div>
+
+      {/* 모델 · 샘플링 주기 · 예상 비용 */}
+      {models.length > 0 && (
+        <div className="reveal" style={{ marginTop: 36 }}>
+          <div className="section-label" style={{ marginBottom: 14 }}>003b — 판정 모델 · 샘플링 주기</div>
+          <div className="mode-row" style={{ marginTop: 0 }}>
+            {models.map(m => (
+              <button key={m.id} className={"mode-chip" + (model === m.id ? " active" : "")} onClick={() => setModel(m.id)}>
+                <span>{m.label}</span>
+                <small>${m.in}/{m.out} · 1M tok{m.approx ? " · 추정가" : ""}</small>
+              </button>
+            ))}
+          </div>
+          <div className="mode-row" style={{ marginTop: 10 }}>
+            {INTERVALS.map(s => (
+              <button key={s} className={"mode-chip" + (interval_ === s ? " active" : "")} onClick={() => setInterval_(s)}>
+                <span>{s}초 간격</span>
+                <small>{s === 1 ? "촘촘 · 짧은 장면도 포착" : s >= 5 ? "성김 · 저렴" : "보통"}</small>
+              </button>
+            ))}
+          </div>
+          {est && (
+            <div className="mono-sm mono" style={{ marginTop: 14, color: "var(--paper-faint)" }}>
+              예상 사용량{pending ? "" : " (10분 영상 기준)"} — 토큰 약 {fmtTok(est.total_tokens)}
+              · 비용 {est.approx ? "≈" : "약 "}${est.usd} (₩{est.krw.toLocaleString()})
+              · 금칙 판정 {est.judge_calls}회 + 장면 분석 {est.scene_calls}회 호출
+              {est.approx ? " · 해당 모델 가격은 추정치" : ""}
+            </div>
+          )}
+        </div>
+      )}
 
       {stages && (
         <Fragment>

@@ -7,11 +7,11 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from . import db, search as search_mod
+from . import db, pricing, search as search_mod
 from .config import settings
 from .domain import build_timeline, fmt_tc, sev_label
 from .pipeline import Deps, run_pipeline
@@ -51,7 +51,7 @@ def _video_json(r) -> dict:
 
 
 @app.post("/api/videos")
-async def upload(file: UploadFile):
+async def upload(file: UploadFile, model: str = Form(""), interval: float = Form(0)):
     vid = f"v-{uuid.uuid4().hex[:8]}"
     vdir = settings.video_dir(vid)
     vdir.mkdir(parents=True, exist_ok=True)
@@ -60,9 +60,25 @@ async def upload(file: UploadFile):
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     db.create_video(conn(), vid, file.filename or dest.name, dest.name, datetime.now().strftime("%Y-%m-%d %H:%M"))
-    db.update_video(conn(), vid, size_bytes=dest.stat().st_size)
+    valid_models = {m["id"] for m in pricing.MODELS}
+    db.update_video(
+        conn(), vid,
+        size_bytes=dest.stat().st_size,
+        ai_model=model if model in valid_models else "",
+        frame_interval=min(10.0, max(0.0, interval)),
+    )
     asyncio.create_task(run_pipeline(conn(), vid, str(dest), Deps()))
     return {"id": vid}
+
+
+@app.get("/api/models")
+def models():
+    return {"models": pricing.MODELS, "default": settings.ai_model, "defaultInterval": settings.frame_interval}
+
+
+@app.get("/api/estimate")
+def estimate(duration: float = 600, interval: float = 1.0, model: str = ""):
+    return pricing.estimate(duration, interval, model or settings.ai_model)
 
 
 @app.get("/api/videos")

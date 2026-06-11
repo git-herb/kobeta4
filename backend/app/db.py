@@ -99,6 +99,14 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    for ddl in (
+        "ALTER TABLE videos ADD COLUMN ai_model TEXT DEFAULT ''",
+        "ALTER TABLE videos ADD COLUMN frame_interval REAL DEFAULT 0",
+    ):
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError:
+            pass  # 이미 적용된 마이그레이션
     return conn
 
 
