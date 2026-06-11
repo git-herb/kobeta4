@@ -15,7 +15,7 @@ export default function App() {
   let view;
   if (route.name === "dashboard") view = <Dashboard go={go} />;
   else if (route.name === "search") view = <Search go={go} />;
-  else if (route.name === "upload") view = <Upload go={go} />;
+  else if (route.name === "upload") view = <Upload go={go} route={route} />;
   else if (route.name === "report") view = <Report route={route} go={go} />;
   else view = <Dashboard go={go} />;
 

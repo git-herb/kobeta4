@@ -1,30 +1,84 @@
 /* ============================================================
    Report — 금칙 검수 (타임라인 + 프레임 그리드) / 분석 리포트
+   백엔드 API 사용 · API가 없으면 데모 목 데이터로 폴백
    ============================================================ */
-import { Fragment, useState } from "react";
-import { VIDEOS, REPORT } from "./data.js";
+import { Fragment, useEffect, useState } from "react";
+import { VIDEOS, REPORT, sevLabel } from "./data.js";
 import { useReveal, PageHead, Thumb, SevTag, Modal } from "./shell.jsx";
+import { getReport, deleteVideo } from "./api.js";
+
+/* 목 데이터를 API 리포트 형태로 변환 (백엔드 미가동 데모용) */
+function mockReport(id) {
+  const video = VIDEOS.find(v => v.id === id) || VIDEOS[0];
+  const isFocus = video.id === REPORT.videoId;
+  const R = REPORT;
+  return {
+    id: video.id,
+    title: video.title,
+    status: "done",
+    demo: true,
+    duration: video.duration,
+    size: video.size,
+    uploadedAt: video.uploadedAt,
+    captionSource: video.captionSource,
+    counts: video.counts,
+    maxSev: isFocus ? R.summary.maxSev : video.maxSev,
+    framesSampled: isFocus ? R.summary.framesSampled : 0,
+    categoriesHit: isFocus ? R.summary.categoriesHit : [],
+    resolution: isFocus ? R.meta.resolution : "",
+    codec: isFocus ? R.meta.codec : "",
+    timeline: isFocus ? R.timeline : [],
+    ticks: isFocus ? R.ticks : [],
+    frames: isFocus ? R.frames.map(f => ({ ...f, img: "", imgPrev: "", imgNext: "" })) : [],
+    tech: isFocus ? R.tech : { silence: [], black: [], freeze: [], clipping: [] },
+    scenes: isFocus ? R.scenes.map(s => ({ ...s, img: "" })) : [],
+    corrections: isFocus ? R.corrections : [],
+    transcript: isFocus ? R.transcript : [],
+  };
+}
 
 export function Report({ route, go }) {
   useReveal();
-  const R = REPORT;
-  const video = VIDEOS.find(v => v.id === route.params.id) || VIDEOS[0];
-  const isFocus = video.id === R.videoId; // detailed report only for 안개도시
+  const id = route.params.id;
+  const [R, setR] = useState(null);
   const [tab, setTab] = useState("moderation");
   const [frame, setFrame] = useState(null);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [delError, setDelError] = useState("");
+
+  useEffect(() => {
+    let on = true;
+    getReport(id)
+      .then(r => { if (on) setR(r); })
+      .catch(() => { if (on) setR(mockReport(id)); });
+    return () => { on = false; };
+  }, [id]);
+
+  if (!R) {
+    return <div className="page page-wide"><div className="mono" style={{ padding: "80px 0" }}>리포트 불러오는 중…</div></div>;
+  }
+
+  const onDelete = () => {
+    if (R.demo) { setConfirmDel(false); go("dashboard"); return; }
+    deleteVideo(R.id)
+      .then(() => go("dashboard"))
+      .catch(() => { setDelError("삭제 실패 — 처리 중인 영상은 삭제할 수 없습니다."); });
+  };
 
   return (
     <div className="page page-wide">
       {/* header */}
       <div className="page-head">
         <button className="mono" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--paper-dim)", padding: 0, marginBottom: 26 }} onClick={() => go("dashboard")}>← 대시보드</button>
-        <div className="section-label">007 — 리포트 · {video.id.toUpperCase()}</div>
-        <h1 className="page-title" style={{ marginTop: 20, fontSize: "clamp(30px, 4.6vw, 70px)" }}>{video.title}</h1>
+        <div className="section-label">007 — 리포트 · {R.id.toUpperCase()}{R.demo ? " · 데모 데이터" : ""}</div>
+        <h1 className="page-title" style={{ marginTop: 20, fontSize: "clamp(30px, 4.6vw, 70px)" }}>{R.title}</h1>
         <div className="between" style={{ marginTop: 26, flexWrap: "wrap", gap: 16 }}>
-          <div className="mono">{video.duration} · {video.size} · {video.captionSource} · {video.uploadedAt}</div>
+          <div className="mono">{R.duration} · {R.size} · {R.captionSource} · {R.uploadedAt}</div>
           <div className="flex gap-s center">
-            <SevTag sev={isFocus ? R.summary.maxSev : (video.counts.review > 0 ? 3 : 0)} withCode />
+            <SevTag sev={R.maxSev} withCode />
+            {!R.demo && (
+              <a className="btn" href={`/api/videos/${R.id}/violations.csv`} onClick={e => e.stopPropagation()}>CSV ↓</a>
+            )}
             <button className="btn danger" onClick={() => setConfirmDel(true)}>영상 삭제</button>
           </div>
         </div>
@@ -36,31 +90,33 @@ export function Report({ route, go }) {
         <button className={"tab" + (tab === "analysis" ? " active" : "")} onClick={() => setTab("analysis")}>분석 리포트</button>
       </div>
 
-      {tab === "moderation"
-        ? (isFocus ? <Moderation R={R} onFrame={setFrame} /> : <CleanModeration video={video} />)
-        : (isFocus ? <Analysis R={R} /> : <CleanAnalysis video={video} />)}
+      {tab === "moderation" ? <Moderation R={R} onFrame={setFrame} /> : <Analysis R={R} />}
 
       {frame && <FrameModal frame={frame} onClose={() => setFrame(null)} />}
-      {confirmDel && <DeleteConfirm video={video} onClose={() => setConfirmDel(false)} onDone={() => go("dashboard")} />}
+      {confirmDel && (
+        <DeleteConfirm video={R} error={delError} onClose={() => { setConfirmDel(false); setDelError(""); }} onDone={onDelete} />
+      )}
     </div>
   );
 }
 
 /* ---------- Moderation tab ---------- */
 function Moderation({ R, onFrame }) {
+  const clean = R.frames.length === 0;
   return (
     <Fragment>
       {/* verdict summary */}
       <div className="block">
         <div className="stat-grid reveal" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
-          <div className="stat-cell"><div className="k">종합 판정</div><div className="v small" style={{ marginTop: 14 }}><SevTag sev={R.summary.maxSev} withCode /></div></div>
-          <div className="stat-cell"><div className="k">샘플링 프레임</div><div className="v">{R.summary.framesSampled.toLocaleString()}</div></div>
-          <div className="stat-cell"><div className="k">방영 불가</div><div className="v cit">{R.summary.violation}</div></div>
-          <div className="stat-cell"><div className="k">검토 필요</div><div className="v">{R.summary.review}</div></div>
+          <div className="stat-cell"><div className="k">종합 판정</div><div className="v small" style={{ marginTop: 14 }}><SevTag sev={R.maxSev} withCode /></div></div>
+          <div className="stat-cell"><div className="k">샘플링 프레임</div><div className="v">{(R.framesSampled || 0).toLocaleString()}</div></div>
+          <div className="stat-cell"><div className="k">방영 불가</div><div className="v cit">{R.counts.violation}</div></div>
+          <div className="stat-cell"><div className="k">검토 필요</div><div className="v">{R.counts.review}</div></div>
         </div>
         <div className="flex gap-s wrap reveal" style={{ marginTop: 24, alignItems: "center" }}>
           <span className="mono" style={{ color: "var(--paper-faint)" }}>적중 카테고리</span>
-          {R.summary.categoriesHit.map(c => <span key={c} className="source-tag both">{c}</span>)}
+          {R.categoriesHit.map(c => <span key={c} className="source-tag both">{c}</span>)}
+          {R.categoriesHit.length === 0 && <span className="mono" style={{ color: "var(--paper-faint)" }}>없음</span>}
           <span className="mono" style={{ color: "var(--paper-faint)", marginLeft: 8 }}>· 1초 간격 샘플 · 연속 2~3장 묶음 판정 · 대사·소리 근거 포함</span>
         </div>
       </div>
@@ -72,7 +128,7 @@ function Moderation({ R, onFrame }) {
             <div className="section-label">008 — 영상 타임라인</div>
             <div className="block-title" style={{ marginTop: 16 }}>구간별 분석</div>
           </div>
-          <div className="mono">전체 {R.meta.duration}</div>
+          <div className="mono">전체 {R.duration}</div>
         </div>
         <div className="timeline-wrap reveal">
           <div className="timeline">
@@ -103,17 +159,21 @@ function Moderation({ R, onFrame }) {
           </div>
           <div className="mono">클릭 → 상세 판정</div>
         </div>
-        <div className="frame-grid reveal">
-          {R.frames.map((f, i) => (
-            <div key={i} className="frame-card" onClick={() => onFrame(f)}>
-              <Thumb tc={f.tc} glyph={f.category} variant={f.sev >= 4 ? "violation" : "review"} />
-              <div className="frame-meta">
-                <span className="mono" style={{ color: "var(--paper)" }}>{f.category}</span>
-                <SevTag sev={f.sev} withCode />
+        {clean ? (
+          <div className="mono reveal" style={{ color: "var(--paper-faint)" }}>✳ 금칙 위반 또는 검토 필요 프레임이 발견되지 않았습니다. 전체 구간 통과.</div>
+        ) : (
+          <div className="frame-grid reveal">
+            {R.frames.map((f, i) => (
+              <div key={i} className="frame-card" onClick={() => onFrame(f)}>
+                <Thumb tc={f.tc} glyph={f.category} variant={f.sev >= 4 ? "violation" : "review"} src={f.img} />
+                <div className="frame-meta">
+                  <span className="mono" style={{ color: "var(--paper)" }}>{f.category}</span>
+                  <SevTag sev={f.sev} withCode />
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </Fragment>
   );
@@ -128,9 +188,9 @@ function FrameModal({ frame, onClose }) {
         <SevTag sev={frame.sev} withCode />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 24 }}>
-        <Thumb glyph="−1 프레임" style={{ aspectRatio: "16/9", opacity: 0.55 }} />
-        <Thumb glyph="판정 프레임" variant={frame.sev >= 4 ? "violation" : "review"} style={{ aspectRatio: "16/9" }} />
-        <Thumb glyph="+1 프레임" style={{ aspectRatio: "16/9", opacity: 0.55 }} />
+        <Thumb glyph="−1 프레임" src={frame.imgPrev} style={{ aspectRatio: "16/9", opacity: 0.55 }} />
+        <Thumb glyph="판정 프레임" variant={frame.sev >= 4 ? "violation" : "review"} src={frame.img} style={{ aspectRatio: "16/9" }} />
+        <Thumb glyph="+1 프레임" src={frame.imgNext} style={{ aspectRatio: "16/9", opacity: 0.55 }} />
       </div>
       <div className="mono" style={{ color: "var(--paper-faint)", marginBottom: 22 }}>✳ 연속 2~3장을 묶어 동작의 흐름을 판정합니다</div>
       <table className="kv-table">
@@ -156,11 +216,11 @@ function Analysis({ R }) {
         <div className="section-label">010 — 메타데이터</div>
         <table className="kv-table reveal" style={{ marginTop: 26 }}>
           <tbody>
-            <tr><td className="k">파일명</td><td className="v">{R.meta.filename}</td></tr>
-            <tr><td className="k">크기 / 길이</td><td className="v">{R.meta.size} · {R.meta.duration}</td></tr>
-            <tr><td className="k">해상도 / 코덱</td><td className="v">{R.meta.resolution} · {R.meta.codec}</td></tr>
-            <tr><td className="k">업로드 시각</td><td className="v">{R.meta.uploadedAt}</td></tr>
-            <tr><td className="k">자막 출처</td><td className="v cit">{R.meta.captionSource}</td></tr>
+            <tr><td className="k">파일명</td><td className="v">{R.title}</td></tr>
+            <tr><td className="k">크기 / 길이</td><td className="v">{R.size} · {R.duration}</td></tr>
+            {R.resolution ? <tr><td className="k">해상도 / 코덱</td><td className="v">{R.resolution} · {R.codec}</td></tr> : null}
+            <tr><td className="k">업로드 시각</td><td className="v">{R.uploadedAt}</td></tr>
+            <tr><td className="k">자막 출처</td><td className="v cit">{R.captionSource}</td></tr>
           </tbody>
         </table>
       </div>
@@ -183,13 +243,14 @@ function Analysis({ R }) {
         <div className="reveal">
           {R.scenes.map((s, i) => (
             <div key={i} className="scene">
-              <Thumb tc={s.tc} glyph="대표 화면" />
+              <Thumb tc={s.tc} glyph="대표 화면" src={s.img} />
               <div>
                 <div className="scene-time">{s.tc}</div>
                 <div className="scene-desc">{s.desc}</div>
               </div>
             </div>
           ))}
+          {R.scenes.length === 0 && <div className="mono" style={{ color: "var(--paper-faint)" }}>장면 분석 데이터가 없습니다.</div>}
         </div>
       </div>
 
@@ -208,6 +269,7 @@ function Analysis({ R }) {
               </div>
             </div>
           ))}
+          {R.corrections.length === 0 && <div className="mono" style={{ color: "var(--paper-faint)" }}>교정된 문장이 없습니다.</div>}
         </div>
       </div>
 
@@ -227,6 +289,7 @@ function Analysis({ R }) {
               </span>
             </div>
           ))}
+          {R.transcript.length === 0 && <div className="tx-line"><span className="tx-time">—</span><span className="tx-text dim">자막이 없습니다.</span></div>}
         </div>
       </div>
     </Fragment>
@@ -245,39 +308,8 @@ function TechCell({ label, items }) {
   );
 }
 
-/* ---------- clean (no-violation) states ---------- */
-function CleanModeration({ video }) {
-  return (
-    <div className="block">
-      <div className="stat-grid reveal" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
-        <div className="stat-cell"><div className="k">종합 판정</div><div className="v small" style={{ marginTop: 14 }}><SevTag sev={video.counts.review > 0 ? 3 : 0} /></div></div>
-        <div className="stat-cell"><div className="k">통과 구간</div><div className="v">{video.counts.pass}</div></div>
-        <div className="stat-cell"><div className="k">위반 / 검토</div><div className="v">{video.counts.violation + video.counts.review}</div></div>
-      </div>
-      <div className="mono reveal" style={{ marginTop: 32, color: "var(--paper-faint)" }}>✳ 금칙 위반 또는 검토 필요 프레임이 발견되지 않았습니다. 전체 구간 통과.</div>
-    </div>
-  );
-}
-
-function CleanAnalysis({ video }) {
-  return (
-    <div className="block">
-      <div className="section-label">메타데이터</div>
-      <table className="kv-table reveal" style={{ marginTop: 26 }}>
-        <tbody>
-          <tr><td className="k">파일명</td><td className="v">{video.title}</td></tr>
-          <tr><td className="k">크기 / 길이</td><td className="v">{video.size} · {video.duration}</td></tr>
-          <tr><td className="k">업로드 시각</td><td className="v">{video.uploadedAt}</td></tr>
-          <tr><td className="k">자막 출처</td><td className="v cit">{video.captionSource}</td></tr>
-        </tbody>
-      </table>
-      <div className="mono reveal" style={{ marginTop: 28, color: "var(--paper-faint)" }}>✳ 상세 장면 분석 데이터는 안개도시_7회 리포트에서 확인할 수 있습니다 (데모 포커스 영상).</div>
-    </div>
-  );
-}
-
 /* ---------- delete confirm ---------- */
-function DeleteConfirm({ video, onClose, onDone }) {
+function DeleteConfirm({ video, error, onClose, onDone }) {
   return (
     <Modal title="영상 삭제" onClose={onClose} className="confirm">
       <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 14 }}>이 영상을 삭제할까요?</div>
@@ -285,6 +317,7 @@ function DeleteConfirm({ video, onClose, onDone }) {
       <div className="dim" style={{ fontSize: 14, marginBottom: 26 }}>
         영상 원본뿐 아니라 <span className="cit">리포트 · 검색 색인 · 프레임 이미지</span> 등 관련 데이터가 모두 함께 지워집니다. 이 작업은 되돌릴 수 없습니다.
       </div>
+      {error && <div className="mono cit" style={{ marginBottom: 18 }}>{error}</div>}
       <div className="flex gap-s" style={{ justifyContent: "flex-end" }}>
         <button className="btn" onClick={onClose}>취소</button>
         <button className="btn primary" onClick={onDone}>삭제 확인 →</button>

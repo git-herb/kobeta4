@@ -4,6 +4,7 @@
 import { Fragment, useRef, useState } from "react";
 import { SEARCH } from "./data.js";
 import { useReveal, PageHead, Thumb } from "./shell.jsx";
+import { searchApi } from "./api.js";
 
 const SEARCH_MODES = [
   { id: "hybrid", label: "HYBRID", desc: "키워드+의미" },
@@ -16,13 +17,18 @@ export function Search({ go }) {
   useReveal();
   const [mode, setMode] = useState("hybrid");
   const [q, setQ] = useState("비 내리는 야경");
-  const [submitted, setSubmitted] = useState("비 내리는 야경");
+  const [submitted, setSubmitted] = useState("");
+  const [results, setResults] = useState([]);
+  const [demo, setDemo] = useState(false);
   const inputRef = useRef(null);
 
-  const run = (val) => { setSubmitted(val); };
+  const run = (val, m) => {
+    setSubmitted(val);
+    searchApi(val, m || mode)
+      .then(r => { setResults(r.results); setDemo(false); })
+      .catch(() => { setResults(SEARCH.results); setDemo(true); });
+  };
   const onKey = (e) => { if (e.key === "Enter") run(q); };
-
-  const results = SEARCH.results;
 
   return (
     <div className="page page-wide">
@@ -48,7 +54,8 @@ export function Search({ go }) {
         {/* modes */}
         <div className="mode-row">
           {SEARCH_MODES.map(m => (
-            <button key={m.id} className={"mode-chip" + (mode === m.id ? " active" : "")} onClick={() => setMode(m.id)}>
+            <button key={m.id} className={"mode-chip" + (mode === m.id ? " active" : "")}
+              onClick={() => { setMode(m.id); if (submitted) run(submitted, m.id); }}>
               <span>{m.label}{m.id === "hybrid" ? " · 기본" : ""}</span>
               <small>{m.desc}</small>
             </button>
@@ -67,8 +74,10 @@ export function Search({ go }) {
 
       {/* results */}
       <div className="between reveal" style={{ marginTop: 64, marginBottom: 4, flexWrap: "wrap", gap: 12 }}>
-        <div className="section-label" style={{ marginBottom: 0 }}>006 — 결과 {results.length}건</div>
-        <div className="mono">“{submitted}” · 모드 {mode.toUpperCase()}</div>
+        <div className="section-label" style={{ marginBottom: 0 }}>
+          006 — 결과 {results.length}건{demo ? " · 데모 데이터" : ""}
+        </div>
+        <div className="mono">{submitted ? `“${submitted}” · 모드 ${mode.toUpperCase()}` : "검색어를 입력하세요"}</div>
       </div>
 
       <div className="index-list reveal">
@@ -88,7 +97,7 @@ function ResultRow({ r, go }) {
   const sourceLabel = r.source === "both" ? "BOTH" : r.source.toUpperCase();
   return (
     <div className="result-row" onClick={() => go("report", { id: r.videoId, tc: r.tc })}>
-      <Thumb tc={r.tc} glyph="장면 썸네일" />
+      <Thumb tc={r.tc} glyph="장면 썸네일" src={r.thumb} />
       <div>
         <div className="res-title">{r.videoTitle}</div>
         <div className="res-snip">{r.snippet}</div>

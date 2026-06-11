@@ -56,12 +56,14 @@ export function useReveal() {
 }
 
 /* ---------- thumbnail placeholder ---------- */
-export function Thumb({ tc, glyph, variant, style, className }) {
+export function Thumb({ tc, glyph, variant, style, className, src }) {
   const v = variant === "review" ? "cit-edge" : variant === "violation" ? "cit-fill" : "";
   return (
     <div className={"thumb " + v + (className ? " " + className : "")} style={style}>
-      {glyph && <div className="glyph">{glyph}</div>}
-      {tc && <div className="tc">{tc}</div>}
+      {src
+        ? <img src={src} alt={glyph || tc || ""} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+        : (glyph && <div className="glyph">{glyph}</div>)}
+      {tc && <div className="tc" style={{ position: "relative", zIndex: 1 }}>{tc}</div>}
     </div>
   );
 }
