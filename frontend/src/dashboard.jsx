@@ -111,12 +111,16 @@ function VideoRow({ v, num, go }) {
 /* ---------- Upload ---------- */
 const INTERVALS = [1, 2, 3, 5, 10];
 
+const HIDDEN_MODELS = ["gpt-5.4"];   // 프론트에서만 숨김
+
 export function Upload({ go, route }) {
   useReveal();
   const fileRef = useRef(null);
-  const [uploadPct, setUploadPct] = useState(null);   // 업로드 전송률
-  const [activeId, setActiveId] = useState((route && route.params && route.params.id) || null);
-  const [prog, setProg] = useState(null);             // 파이프라인 진행
+  const [uploadPct, setUploadPct] = useState(null);   // 업로드 전송률 (전체)
+  const [activeIds, setActiveIds] = useState(
+    route && route.params && route.params.id ? [route.params.id] : []
+  );
+  const [progs, setProgs] = useState({});             // id → 파이프라인 진행
   const [error, setError] = useState("");
   const [demo, setDemo] = useState(false);
 
@@ -124,77 +128,100 @@ export function Upload({ go, route }) {
   const [models, setModels] = useState([]);
   const [model, setModel] = useState("");
   const [interval_, setInterval_] = useState(1);
-  const [pending, setPending] = useState(null);       // { file, duration }
+  const [pending, setPending] = useState([]);         // [{ file, duration }]
   const [est, setEst] = useState(null);
 
   useEffect(() => {
     getModels()
-      .then(d => { setModels(d.models); setModel(d.default || d.models[0].id); setInterval_(d.defaultInterval || 1); })
+      .then(d => {
+        const ms = d.models.filter(m => !HIDDEN_MODELS.includes(m.id));
+        setModels(ms);
+        setModel(HIDDEN_MODELS.includes(d.default) ? ms[0].id : (d.default || ms[0].id));
+        setInterval_(d.defaultInterval || 1);
+      })
       .catch(() => {});
   }, []);
 
   // 모델/주기/파일이 바뀔 때마다 예상 비용 갱신 (파일 없으면 10분 기준)
+  const totalDuration = pending.reduce((a, p) => a + (p.duration || 0), 0);
   useEffect(() => {
     if (!model) return;
-    const dur = pending && pending.duration ? pending.duration : 600;
-    getEstimate(dur, interval_, model).then(setEst).catch(() => setEst(null));
-  }, [model, interval_, pending]);
+    getEstimate(totalDuration > 0 ? totalDuration : 600, interval_, model)
+      .then(setEst).catch(() => setEst(null));
+  }, [model, interval_, totalDuration]);
 
-  // 진행 중 영상 폴링
+  // 진행 중 영상 폴링 (여러 개 동시)
   useEffect(() => {
-    if (!activeId) {
-      // 백엔드에서 처리 중 영상 찾아 자동 표시
+    if (activeIds.length === 0) {
       listVideos()
-        .then(v => { const p = v.find(x => x.status === "processing"); if (p) setActiveId(p.id); })
+        .then(v => {
+          const ps = v.filter(x => x.status === "processing").map(x => x.id);
+          if (ps.length) setActiveIds(ps);
+        })
         .catch(() => setDemo(true));
       return;
     }
     let on = true;
     const t = setInterval(() => {
-      getProgress(activeId)
-        .then(p => { if (on) { setProg(p); if (p.status !== "processing") clearInterval(t); } })
-        .catch(() => { if (on) setDemo(true); });
+      Promise.all(activeIds.map(id => getProgress(id).catch(() => null)))
+        .then(list => {
+          if (!on) return;
+          const next = {};
+          list.forEach(p => { if (p) next[p.id] = p; });
+          if (Object.keys(next).length === 0) { setDemo(true); return; }
+          setProgs(next);
+          if (Object.values(next).every(p => p.status !== "processing")) clearInterval(t);
+        });
     }, 1000);
     return () => { on = false; clearInterval(t); };
-  }, [activeId]);
+  }, [activeIds]);
 
   const pick = () => fileRef.current && fileRef.current.click();
 
-  // 파일 선택 → 바로 올리지 않고 길이를 읽어 예상 비용을 먼저 보여준다
-  const onFile = async (file) => {
-    if (!file) return;
+  // 파일 선택(여러 개) → 바로 올리지 않고 길이를 읽어 예상 비용을 먼저 보여준다
+  const onFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
     setError("");
-    const duration = await readDuration(file);
-    setPending({ file, duration });
+    const read = await Promise.all(files.map(async f => ({ file: f, duration: await readDuration(f) })));
+    setPending(prev => [...prev, ...read]);
   };
 
   const startUpload = async () => {
-    if (!pending) return;
+    if (!pending.length) return;
     setError("");
     setUploadPct(0);
+    const ids = [];
     try {
-      const { id } = await uploadVideo(pending.file, setUploadPct, { model, interval: interval_ });
+      for (let i = 0; i < pending.length; i++) {
+        const { id } = await uploadVideo(
+          pending[i].file,
+          pct => setUploadPct(Math.round(((i + pct / 100) / pending.length) * 100)),
+          { model, interval: interval_ },
+        );
+        ids.push(id);
+      }
       setUploadPct(null);
-      setPending(null);
-      setProg(null);
-      setActiveId(id);
+      setPending([]);
+      setProgs({});
+      setActiveIds(ids);
     } catch (e) {
       setUploadPct(null);
+      if (ids.length) setActiveIds(ids);
       setError("업로드 실패 — 백엔드 서버(8000)가 실행 중인지 확인하세요.");
     }
   };
 
   const onDrop = (e) => {
     e.preventDefault();
-    onFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+    onFiles(e.dataTransfer.files);
   };
 
   const fmtTok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "K" : String(n);
+  const fmtDur = (d) => `${Math.floor(d / 60)}분 ${Math.round(d % 60)}초`;
 
-  const stages = prog ? prog.stages : (demo ? PROCESSING.stages.map(s => ({ ...s, error: "" })) : null);
-  const overall = prog ? prog.overall
-    : stages ? Math.round(stages.reduce((a, s) => a + s.pct, 0) / stages.length) : 0;
-  const titleLabel = prog ? prog.title : demo ? "예능_불금파티_12회.mp4 (데모)" : "";
+  const progList = Object.values(progs);
+  const demoStages = demo && progList.length === 0 ? PROCESSING.stages.map(s => ({ ...s, error: "" })) : null;
 
   return (
     <div className="page">
@@ -204,26 +231,40 @@ export function Upload({ go, route }) {
         meta="브라우저에서 영상 업로드 · 1개 이상 누적 가능 · 단계별 진행 상황 실시간 표시"
       />
 
-      <input ref={fileRef} type="file" accept="video/*" style={{ display: "none" }}
-        onChange={e => onFile(e.target.files && e.target.files[0])} />
+      <input ref={fileRef} type="file" accept="video/*" multiple style={{ display: "none" }}
+        onChange={e => { onFiles(e.target.files); e.target.value = ""; }} />
 
       <div className="dropzone reveal" style={{ marginTop: 48 }} onClick={pick}
         onDragOver={e => e.preventDefault()} onDrop={onDrop}>
-        <div className="mono" style={{ marginBottom: 18 }}>DROP / SELECT — .MP4 .MOV .MKV</div>
+        <div className="mono" style={{ marginBottom: 18 }}>DROP / SELECT — .MP4 .MOV .MKV · 여러 개 가능</div>
         <div className="big">
           {uploadPct !== null ? `전송 중 ${uploadPct}%`
-            : pending ? pending.file.name
+            : pending.length === 1 ? pending[0].file.name
+            : pending.length > 1 ? `영상 ${pending.length}개 선택됨`
             : "영상을 여기에 끌어다 놓기"}
         </div>
         <div className="dim" style={{ marginTop: 16, fontSize: 14 }}>
-          {pending
-            ? `길이 ${Math.round(pending.duration / 60)}분 ${Math.round(pending.duration % 60)}초 — 아래에서 모델·주기 확인 후 업로드`
+          {pending.length
+            ? `총 길이 ${fmtDur(totalDuration)} — 아래에서 모델·주기 확인 후 업로드`
             : "업로드 즉시 아카이브 + 검수가 동시에 시작됩니다"}
         </div>
-        <button className="btn primary" style={{ marginTop: 28 }}
-          onClick={(e) => { e.stopPropagation(); pending ? startUpload() : pick(); }}>
-          {pending ? "업로드 시작 →" : "파일 선택 →"}
-        </button>
+        {pending.length > 1 && (
+          <div className="mono-sm mono" style={{ marginTop: 12, color: "var(--paper-faint)" }}>
+            {pending.map((p, i) => `${i + 1}. ${p.file.name} (${fmtDur(p.duration)})`).join("  ·  ")}
+          </div>
+        )}
+        <div className="flex gap-s" style={{ marginTop: 28, justifyContent: "center" }}>
+          <button className="btn primary"
+            onClick={(e) => { e.stopPropagation(); pending.length ? startUpload() : pick(); }}>
+            {pending.length ? `업로드 시작 (${pending.length}개) →` : "파일 선택 →"}
+          </button>
+          {pending.length > 0 && (
+            <button className="btn" onClick={(e) => { e.stopPropagation(); pick(); }}>+ 파일 추가</button>
+          )}
+          {pending.length > 0 && (
+            <button className="btn" onClick={(e) => { e.stopPropagation(); setPending([]); }}>비우기</button>
+          )}
+        </div>
         {error && <div className="mono cit" style={{ marginTop: 18 }}>{error}</div>}
       </div>
 
@@ -249,7 +290,8 @@ export function Upload({ go, route }) {
           </div>
           {est && (
             <div className="mono-sm mono" style={{ marginTop: 14, color: "var(--paper-faint)" }}>
-              예상 사용량{pending ? "" : " (10분 영상 기준)"} — 토큰 약 {fmtTok(est.total_tokens)}
+              예상 사용량{pending.length ? (pending.length > 1 ? ` (${pending.length}개 합산)` : "") : " (10분 영상 기준)"}
+              — 토큰 약 {fmtTok(est.total_tokens)}
               · 비용 {est.approx ? "≈" : "약 "}${est.usd} (₩{est.krw.toLocaleString()})
               · 금칙 판정 {est.judge_calls}회 + 장면 분석 {est.scene_calls}회 호출
               {est.approx ? " · 해당 모델 가격은 추정치" : ""}
@@ -258,32 +300,42 @@ export function Upload({ go, route }) {
         </div>
       )}
 
-      {stages && (
-        <Fragment>
-          <div className="between reveal" style={{ marginTop: 64, marginBottom: 22, flexWrap: "wrap", gap: 16 }}>
-            <div className="section-label" style={{ marginBottom: 0 }}>004 — 처리 중 · 영상 내 병렬</div>
-            <div className="mono">{titleLabel} · 전체 {overall}%</div>
+      {(progList.length > 0 || demoStages) && (
+        <div className="between reveal" style={{ marginTop: 64, marginBottom: 22, flexWrap: "wrap", gap: 16 }}>
+          <div className="section-label" style={{ marginBottom: 0 }}>
+            004 — 처리 중 · 영상 {progList.length || 1}개 병렬{demoStages ? " (데모)" : ""}
           </div>
+        </div>
+      )}
 
-          <div className="proc-card reveal">
+      {progList.map(p => (
+        <Fragment key={p.id}>
+          <div className="proc-card reveal" style={{ marginBottom: 20 }}>
             <div className="proc-stage" style={{ borderBottom: "1px solid var(--line)" }}>
-              <div className="pname cit">전체 진행률</div>
-              <div className="ppct cit">{overall}%</div>
+              <div className="pname cit">{p.title}</div>
+              <div className="ppct cit">{p.overall}%</div>
               <div className="ptrack prog-track" style={{ marginTop: 6 }}>
-                <div className="prog-fill shimmer" style={{ width: overall + "%" }}></div>
+                <div className="prog-fill shimmer" style={{ width: p.overall + "%" }}></div>
               </div>
             </div>
-            {stages.map((s, i) => (
+            {p.stages.map((s, i) => (
               <ProcStage key={i} s={s} />
             ))}
+            {p.status === "done" && (
+              <button className="btn primary" style={{ marginTop: 18 }} onClick={() => go("report", { id: p.id })}>
+                리포트 보기 →
+              </button>
+            )}
           </div>
-
-          {prog && prog.status === "done" && (
-            <button className="btn primary" style={{ marginTop: 24 }} onClick={() => go("report", { id: activeId })}>
-              리포트 보기 →
-            </button>
-          )}
         </Fragment>
+      ))}
+
+      {demoStages && (
+        <div className="proc-card reveal">
+          {demoStages.map((s, i) => (
+            <ProcStage key={i} s={s} />
+          ))}
+        </div>
       )}
 
       <div className="mono reveal" style={{ marginTop: 22, color: "var(--paper-faint)" }}>
