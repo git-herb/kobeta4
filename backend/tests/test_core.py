@@ -113,25 +113,34 @@ def test_search_modes(conn):
 
 # ---------- ai wrappers (mocked client) ----------
 
-class FakeBlock:
-    type = "text"
-
+class FakeMsg:
     def __init__(self, text):
-        self.text = text
+        self.content = text
+
+
+class FakeChoice:
+    def __init__(self, text):
+        self.message = FakeMsg(text)
 
 
 class FakeResp:
     def __init__(self, text):
-        self.content = [FakeBlock(text)]
+        self.choices = [FakeChoice(text)]
 
 
 class FakeClient:
+    """openai 클라이언트 모양 흉내 — client.chat.completions.create(...)"""
+
     def __init__(self, payload):
         self.payload = payload
         self.calls = []
 
     @property
-    def messages(self):
+    def chat(self):
+        return self
+
+    @property
+    def completions(self):
         return self
 
     def create(self, **kw):
@@ -146,7 +155,7 @@ def test_correct_captions_returns_changed_only():
         {"tc": "07:00", "orig": "같음", "fix": "같음"},
     ]})
     client = FakeClient(payload)
-    out = ai.correct_captions(client, "claude-opus-4-8", [{"tc": "06:32", "text": "안게로 가득"}])
+    out = ai.correct_captions(client, "gpt-4o-mini", [{"tc": "06:32", "text": "안게로 가득"}])
     assert out == [{"tc": "06:32", "orig": "안게로 가득", "fix": "안개로 가득"}]
 
 

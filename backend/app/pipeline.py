@@ -109,7 +109,7 @@ async def run_pipeline(conn, vid: str, src_path: str, deps: Deps | None = None) 
             return
 
         async def correct():
-            corrections = await bg(deps.ai.correct_captions, deps.client(), s.anthropic_model, lines)
+            corrections = await bg(deps.ai.correct_captions, deps.client(), s.ai_model, lines)
             fix_map = {c["orig"]: c for c in corrections}
             for line in lines:
                 hit = fix_map.get(line["text"])
@@ -138,7 +138,7 @@ async def run_pipeline(conn, vid: str, src_path: str, deps: Deps | None = None) 
             for i, t in enumerate(times):
                 img = str(vdir / f"scene_{int(t):06d}.jpg")
                 await bg(deps.media.extract_frame_at, src_path, float(t), img)
-                desc = await bg(deps.ai.analyze_scene, deps.client(), s.anthropic_model,
+                desc = await bg(deps.ai.analyze_scene, deps.client(), s.ai_model,
                                 Path(img).read_bytes(), fmt_tc(t))
                 scene_rows.append({"t": float(t), "tc": fmt_tc(t), "descr": desc, "img": Path(img).name})
                 pct("장면 분석", (i + 1) / len(times) * 100)
@@ -184,7 +184,7 @@ async def run_pipeline(conn, vid: str, src_path: str, deps: Deps | None = None) 
                         l["text"] for l in transcript_rows if abs(l["t"] - mid[0]) <= win * s.frame_interval
                     )[:500]
                     imgs = [Path(f[1]).read_bytes() for f in window]
-                    verdict = await bg(deps.ai.judge_window, deps.client(), s.anthropic_model,
+                    verdict = await bg(deps.ai.judge_window, deps.client(), s.ai_model,
                                        imgs, snippet, rules_text, fmt_tc(mid[0]))
                     return window, verdict
 

@@ -21,8 +21,8 @@ _load_dotenv(BASE_DIR / ".env")
 
 class Settings:
     def __init__(self) -> None:
-        self.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        self.anthropic_model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
+        self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        self.ai_model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         self.voyage_api_key = os.environ.get("VOYAGE_API_KEY", "")
         self.telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         self.telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
