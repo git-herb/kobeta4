@@ -15,3 +15,7 @@ backend/data/
 # tooling artifacts
 .playwright-mcp/
 .gstack/
+
+# remotion
+video/out/
+video/public/*.mp4
