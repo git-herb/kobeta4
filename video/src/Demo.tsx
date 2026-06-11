@@ -168,10 +168,11 @@ const Outro: React.FC<{ durationInFrames: number }> = ({ durationInFrames }) => 
 
 export const CLIP1_FRAMES = Math.round(43.8 * 30);
 export const CLIP2_FRAMES = Math.round(68.8 * 30);
+export const CLIP3_FRAMES = Math.round(10.2 * 30);
 export const INTRO = 110;
 export const CHAPTER = 55;
 export const OUTRO = 95;
-export const TOTAL = INTRO + CHAPTER + CLIP1_FRAMES + CHAPTER + CLIP2_FRAMES + OUTRO;
+export const TOTAL = INTRO + CHAPTER + CLIP1_FRAMES + CHAPTER + CLIP2_FRAMES + CHAPTER + CLIP3_FRAMES + OUTRO;
 
 export const Demo: React.FC = () => (
   <AbsoluteFill style={{ backgroundColor: T.ink }}>
@@ -190,6 +191,12 @@ export const Demo: React.FC = () => (
       </Series.Sequence>
       <Series.Sequence durationInFrames={CLIP2_FRAMES}>
         <Clip src="clip2.mp4" label="02 — 아카이브 데모" durationInFrames={CLIP2_FRAMES} />
+      </Series.Sequence>
+      <Series.Sequence durationInFrames={CHAPTER}>
+        <Chapter num="03" title="삭제" sub="원본 + 리포트 · 색인 · 프레임까지 한 번에 정리" durationInFrames={CHAPTER} />
+      </Series.Sequence>
+      <Series.Sequence durationInFrames={CLIP3_FRAMES}>
+        <Clip src="clip3.mp4" label="03 — 삭제 데모" durationInFrames={CLIP3_FRAMES} />
       </Series.Sequence>
       <Series.Sequence durationInFrames={OUTRO}>
         <Outro durationInFrames={OUTRO} />
