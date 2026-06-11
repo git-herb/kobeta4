@@ -1,0 +1,17 @@
+# node
+node_modules/
+dist/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# runtime data & secrets
+backend/data/
+.env
+
+# tooling artifacts
+.playwright-mcp/
+.gstack/
